@@ -1,0 +1,24 @@
+[package]
+authors = ["Luca Pizzamiglio <luca.pizzamiglio@trivago.com>"]
+edition = "2018"
+name = "ronsul"
+version = "0.1.0"
+[dependencies]
+exitfailure = "0.5"
+failure = "0.1"
+failure_derive = "0.1"
+futures = "0.1"
+reqwest = "0.9"
+rust-consul = { git = "https://github.com/pizzamig/rust-consul" }
+serde_json = "1.0"
+structopt = "0.2"
+trust-dns-resolver = "0.11"
+tokio = "0.1"
+
+[dependencies.serde]
+features = ["derive"]
+version = "1.0"
+
+[dependencies.structopt-flags]
+features = ["simplelog"]
+version = "0.3"
