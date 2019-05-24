@@ -1,12 +1,15 @@
 use super::Opt;
 use crate::error::RonsulError;
 use futures::{Async, Future, Poll, Stream};
+use log::{debug, info, trace};
 use reqwest::r#async::{Chunk, Client as ReqwClient, Decoder, Response as ReqwResponse};
 use reqwest::Url as ReqwUrl;
 use reqwest::{Error as ReqwError, StatusCode};
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
+use std::time::{Duration, Instant};
+use tokio::timer::Delay;
 use trust_dns_resolver::Resolver;
 
 pub fn get_consul_ips(opt: &Opt) -> Result<HashSet<IpAddr>, RonsulError> {
@@ -15,15 +18,11 @@ pub fn get_consul_ips(opt: &Opt) -> Result<HashSet<IpAddr>, RonsulError> {
         rv.insert(opt.consul_server.unwrap());
     } else {
         let resolver = Resolver::from_system_conf().map_err(RonsulError::ResolverConf)?;
-        //            .with_context(|_| "wtf, your /etc/resolv.conf is unreadable")?;
         loop {
             let start_len = rv.len();
             let response = resolver
                 .ipv4_lookup("consul.service.consul.")
                 .map_err(RonsulError::Resolver)?;
-            //                .with_context(|e| {
-            //                    format!("failed to resolve consul.service.consul (error {})", e)
-            //                })?;
             response.into_iter().for_each(|x| {
                 rv.insert(IpAddr::V4(x));
             });
@@ -105,7 +104,7 @@ impl Future for ConsulCatalogService {
                                         .get("x-consul-index")
                                         .unwrap()
                                         .to_str()
-                                        .unwrap()
+                                        .unwrap_or("1")
                                         .parse()
                                         .unwrap_or(1);
                                 }
@@ -149,7 +148,8 @@ pub struct ConsulCatalogServiceUpdates {
 
 enum ReqwStreamState {
     Init,
-    Get(Box<ConsulCatalogService>),
+    Get(Box<ConsulCatalogService>, Instant),
+    Wait(Box<Delay>),
 }
 
 impl Stream for ConsulCatalogServiceUpdates {
@@ -161,41 +161,60 @@ impl Stream for ConsulCatalogServiceUpdates {
             match &mut self.state {
                 ReqwStreamState::Init => {
                     let new_req = get_catalog_services(self.base.clone(), self.block_index);
-                    self.state = ReqwStreamState::Get(Box::new(new_req));
+                    self.state = ReqwStreamState::Get(Box::new(new_req), Instant::now());
                 }
-                ReqwStreamState::Get(f) => match f.poll() {
+                ReqwStreamState::Get(f, start_instant) => match f.poll() {
                     Err(_) => (),
                     Ok(Async::NotReady) => return Ok(Async::NotReady),
                     Ok(Async::Ready((new_services, block_index))) => {
-                        println!("Here Get - Ready!");
+                        trace!("Here Get - Ready!");
                         let mut added = HashMap::new();
                         let mut removed = HashMap::new();
                         for (new_service, new_tags) in new_services.iter() {
                             if !self.current_services.contains_key(new_service) {
                                 added.insert(new_service.clone(), new_tags.clone());
                             } else if self.current_services.get(new_service).unwrap() != new_tags {
-                                println!("Tag change detected: service name {}", new_service);
-                                println!(
+                                debug!("Tag change detected: service name {}", new_service);
+                                debug!(
                                     "Old tags: {:?}",
                                     self.current_services.get(new_service).unwrap()
                                 );
-                                println!("New tags: {:?}", new_tags);
+                                debug!("New tags: {:?}", new_tags);
                             }
                         }
+                        trace!("Here Get - New block index: {}!", block_index);
                         for (old_service, old_tags) in self.current_services.iter() {
                             if !new_services.contains_key(old_service) {
                                 removed.insert(old_service.clone(), old_tags.clone());
                             }
                         }
                         std::mem::replace(&mut self.current_services, new_services);
-                        self.state = ReqwStreamState::Init;
                         if block_index < self.block_index {
                             self.block_index = 0;
                         } else {
                             self.block_index = block_index;
                         }
-                        println!("Here Get - New block index: {}!", block_index);
+                        if Duration::from_secs(15) > start_instant.elapsed() {
+                            let to_wait = Duration::from_millis(15010) - start_instant.elapsed();
+                            info!("Fast response, we wait {:?}", to_wait);
+                            let wait_timer = Delay::new(Instant::now() + to_wait);
+                            self.state = ReqwStreamState::Wait(Box::new(wait_timer));
+                        } else {
+                            info!(
+                                "Restart without wait (elapsed {:?})",
+                                start_instant.elapsed()
+                            );
+                            self.state = ReqwStreamState::Init;
+                        }
                         return Ok(Async::Ready(Some((added, removed))));
+                    }
+                },
+                ReqwStreamState::Wait(t) => match t.poll() {
+                    Err(_) => (),
+                    Ok(Async::NotReady) => return Ok(Async::NotReady),
+                    Ok(Async::Ready(_)) => {
+                        trace!("Restart with wait");
+                        self.state = ReqwStreamState::Init;
                     }
                 },
             }

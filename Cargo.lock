@@ -1126,6 +1126,7 @@ dependencies = [
  "failure 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "failure_derive 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures 0.1.27 (registry+https://github.com/rust-lang/crates.io-index)",
+ "log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "reqwest 0.9.17 (registry+https://github.com/rust-lang/crates.io-index)",
  "rust-consul 0.1.1 (git+https://github.com/pizzamig/rust-consul)",
  "serde 1.0.91 (registry+https://github.com/rust-lang/crates.io-index)",
